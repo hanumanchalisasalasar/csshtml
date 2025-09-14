@@ -409,30 +409,51 @@
         }
         
         // Create peer connection
-        function createPeerConnection() {
-            peerConnection = new RTCPeerConnection(servers);
-            
-            // Add local stream to peer connection
-            localStream.getTracks().forEach(track => {
-                peerConnection.addTrack(track, localStream);
+function createPeerConnection() {
+    peerConnection = new RTCPeerConnection(servers);
+    
+    // Add local stream to peer connection
+    localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+    });
+    
+    // Handle remote stream
+    peerConnection.ontrack = event => {
+        remoteStream = event.streams[0];
+        remoteVideo.srcObject = remoteStream;
+    };
+    
+    // Handle ICE candidates
+    peerConnection.onicecandidate = event => {
+        if (event.candidate) {
+            iceRef.push({
+                user: currentUser,
+                target: remoteUser,
+                candidate: event.candidate
             });
-            
-            // Handle remote stream
-            peerConnection.ontrack = event => {
-                remoteStream = event.streams[0];
-                remoteVideo.srcObject = remoteStream;
-            };
-            
-            // Handle ICE candidates
-            peerConnection.onicecandidate = event => {
-                if (event.candidate) {
-                    iceRef.push({
-                        user: currentUser,
-                        target: remoteUser,
-                        candidate: event.candidate
-                    });
-                }
-            };
+        }
+    };
+    
+    // Monitor connection state
+    peerConnection.onconnectionstatechange = () => {
+        console.log('Connection state:', peerConnection.connectionState);
+        if (peerConnection.connectionState === 'connected') {
+            callStatus.textContent = 'Connected';
+            callStatus.classList.remove('connecting');
+            userStatus.textContent = 'Call in progress';
+        } else if (peerConnection.connectionState === 'disconnected' || 
+                   peerConnection.connectionState === 'failed') {
+            callStatus.textContent = 'Disconnected';
+            userStatus.textContent = 'Call ended';
+            endCall();
+        }
+    };
+    
+    // Handle ICE connection state
+    peerConnection.oniceconnectionstatechange = () => {
+        console.log('ICE connection state:', peerConnection.iceConnectionState);
+    };
+}
             
             // Handle connection state changes
             peerConnection.onconnectionstatechange = () => {
@@ -472,96 +493,109 @@
             endBtn.classList.remove('hidden');
         }
         
-        // Handle incoming call
-        function handleCall() {
-            // Listen for offers
-            offerRef.on('child_added', async snapshot => {
-                const data = snapshot.val();
-                if (data.target === currentUser && !callStarted) {
-                    callStarted = true;
-                    
-                    // Create peer connection
-                    createPeerConnection();
-                    
-                    // Set remote description
-                    await peerConnection.setRemoteDescription(data.offer);
-                    
-                    // Create answer
-                    const answer = await peerConnection.createAnswer();
-                    await peerConnection.setLocalDescription(answer);
-                    
-                    // Send answer
-                    answerRef.push({
-                        user: currentUser,
-                        target: remoteUser,
-                        answer: answer
-                    });
-                    
-                    // Update UI
-                    callStatus.textContent = 'Connecting...';
-                    callStatus.classList.add('connecting');
-                    callBtn.classList.add('hidden');
-                    endBtn.classList.remove('hidden');
-                }
-            });
+       // Handle incoming call
+function handleCall() {
+    // Listen for offers
+    offerRef.on('child_added', async snapshot => {
+        const data = snapshot.val();
+        if (data.target === currentUser && !callStarted) {
+            callStarted = true;
             
-            // Listen for answers
-            answerRef.on('child_added', async snapshot => {
-                const data = snapshot.val();
-                if (data.target === currentUser && callStarted) {
-                    await peerConnection.setRemoteDescription(data.answer);
-                }
-            });
+            // Create peer connection
+            createPeerConnection();
             
-            // Listen for ICE candidates
-            iceRef.on('child_added', async snapshot => {
-                const data = snapshot.val();
-                if (data.target === currentUser && peerConnection) {
-                    await peerConnection.addIceCandidate(data.candidate);
-                }
-            });
+            try {
+                // Set remote description
+                await peerConnection.setRemoteDescription(data.offer);
+                
+                // Create answer
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                
+                // Send answer
+                answerRef.push({
+                    user: currentUser,
+                    target: remoteUser,
+                    answer: answer
+                });
+                
+                // Update UI
+                callStatus.textContent = 'Connecting...';
+                callStatus.classList.add('connecting');
+                callBtn.classList.add('hidden');
+                endBtn.classList.remove('hidden');
+            } catch (err) {
+                console.error('Error handling offer:', err);
+                endCall();
+            }
         }
-        
+    });
+    
+    // Listen for answers
+    answerRef.on('child_added', async snapshot => {
+        const data = snapshot.val();
+        if (data.target === currentUser && callStarted) {
+            try {
+                await peerConnection.setRemoteDescription(data.answer);
+            } catch (err) {
+                console.error('Error setting remote description:', err);
+                endCall();
+            }
+        }
+    });
+    
+    // Listen for ICE candidates
+    iceRef.on('child_added', async snapshot => {
+        const data = snapshot.val();
+        if (data.target === currentUser && peerConnection) {
+            try {
+                await peerConnection.addIceCandidate(data.candidate);
+            } catch (err) {
+                console.error('Error adding ICE candidate:', err);
+            }
+        }
+    });
+}
         // End call
-        function endCall() {
-            if (peerConnection) {
-                peerConnection.close();
-                peerConnection = null;
-            }
-            
-            if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
-                localStream = null;
-            }
-            
-            if (remoteStream) {
-                remoteStream.getTracks().forEach(track => track.stop());
-                remoteStream = null;
-            }
-            
-            localVideo.srcObject = null;
-            remoteVideo.srcObject = null;
-            
-            callStarted = false;
-            callStatus.textContent = 'Ready';
-            callStatus.classList.remove('connecting');
-            userStatus.textContent = 'Ready to connect';
-            remoteLabel.textContent = `User ${remoteUser}`;
-            
-            callBtn.classList.remove('hidden');
-            endBtn.classList.add('hidden');
-            
-            // Clean up Firebase listeners
-            offerRef.off();
-            answerRef.off();
-            iceRef.off();
-            
-            // Re-initialize media
-            initMedia();
-            
-            // Start listening for calls again
-            handleCall();
-        }
+function endCall() {
+    if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+    }
+    
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+    }
+    
+    if (remoteStream) {
+        remoteStream.getTracks().forEach(track => track.stop());
+        remoteStream = null;
+    }
+    
+    localVideo.srcObject = null;
+    remoteVideo.srcObject = null;
+    
+    callStarted = false;
+    callStatus.textContent = 'Ready';
+    callStatus.classList.remove('connecting');
+    userStatus.textContent = 'Ready to connect';
+    remoteLabel.textContent = `User ${remoteUser}`;
+    
+    callBtn.classList.remove('hidden');
+    endBtn.classList.add('hidden');
+    
+    // Clean up Firebase listeners
+    offerRef.off();
+    answerRef.off();
+    iceRef.off();
+    
+    // Re-initialize media
+    initMedia();
+    
+    // Start listening for calls again
+    handleCall();
+}
         
         // Toggle mute
         function toggleMute() {
@@ -593,4 +627,5 @@
     </script>
 </body>
 </html>
+
 
